@@ -181,7 +181,7 @@ def generate_background(api_key: str, visual_prompt: str) -> bytes:
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "responseModalities": ["IMAGE"],
+            "responseModalities": ["TEXT", "IMAGE"],
             "imageConfig": {"aspectRatio": "1:1", "imageSize": "1K"},
         },
     }
