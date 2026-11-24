@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -53,7 +54,15 @@ def read_state() -> dict:
     return value
 
 
-def save_published_state(state: dict, post: dict, post_id: int, channels: list[dict]) -> None:
+def save_published_state(
+    state: dict,
+    post: dict,
+    post_id: int,
+    publish_status: str,
+    platform_results: list[dict],
+) -> None:
+    # A submitted post is recorded even when one platform fails, to prevent
+    # a workflow retry from duplicating the platforms that already succeeded.
     date_key = post["date"]
     if date_key not in state["published_dates"]:
         state["published_dates"].append(date_key)
@@ -64,12 +73,56 @@ def save_published_state(state: dict, post: dict, post_id: int, channels: list[d
         "date": date_key,
         "post_id": post_id,
         "topic": post["topic"],
-        "platforms": sorted({channel["platform"] for channel in channels}),
+        "status": publish_status,
+        "platforms": [
+            {
+                "channel_id": item.get("channelId"),
+                "platform": item.get("platform"),
+                "status": item.get("status"),
+                "url": item.get("platformUrl"),
+                "error": item.get("errorMessage"),
+            }
+            for item in platform_results
+        ],
         "published_at": datetime.now(ZoneInfo(TIMEZONE)).isoformat(),
     })
     state["published_posts"] = state["published_posts"][-180:]
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def wait_for_publication(api_key: str, post_id: int, timeout_seconds: int = 240) -> tuple[str, list[dict]]:
+    """Wait until BulkPublish reports a terminal result for every target channel."""
+    deadline = time.monotonic() + timeout_seconds
+    last_status = "publishing"
+    last_platforms: list[dict] = []
+    terminal_platform_states = {"published", "failed", "unconfirmed"}
+
+    while True:
+        response = request_json("GET", f"/posts/{post_id}", api_key)
+        remote_post = response.get("post", response)
+        if not isinstance(remote_post, dict):
+            raise RuntimeError("BulkPublish returned an unexpected post-status response.")
+
+        last_status = str(remote_post.get("status", "unknown"))
+        candidate_platforms = remote_post.get("postPlatforms", [])
+        if isinstance(candidate_platforms, list):
+            last_platforms = candidate_platforms
+
+        all_platforms_terminal = (
+            bool(last_platforms)
+            and all(item.get("status") in terminal_platform_states for item in last_platforms)
+        )
+        if all_platforms_terminal:
+            return last_status, last_platforms
+
+        if last_status in {"failed", "partial"} and last_platforms:
+            return last_status, last_platforms
+
+        if time.monotonic() >= deadline:
+            return last_status, last_platforms
+
+        time.sleep(5)
 
 
 def main() -> None:
@@ -102,6 +155,21 @@ def main() -> None:
         channel for channel in all_channels
         if channel.get("platform") in SUPPORTED_IMAGE_PLATFORMS and channel not in eligible
     ]
+
+    requested_ids_raw = os.getenv("PUBLISH_CHANNEL_IDS", "").strip()
+    if requested_ids_raw:
+        try:
+            requested_ids = {int(value.strip()) for value in requested_ids_raw.split(",") if value.strip()}
+        except ValueError as exc:
+            raise RuntimeError("PUBLISH_CHANNEL_IDS must be comma-separated numeric channel IDs.") from exc
+        available_ids = {int(channel["id"]) for channel in eligible}
+        missing_ids = requested_ids - available_ids
+        if missing_ids:
+            raise RuntimeError(
+                "These requested channel IDs are not eligible/connected: "
+                + ", ".join(str(value) for value in sorted(missing_ids))
+            )
+        eligible = [channel for channel in eligible if int(channel["id"]) in requested_ids]
     unsupported = sorted({
         channel.get("platform", "unknown")
         for channel in all_channels
@@ -180,11 +248,32 @@ def main() -> None:
     if not post_id:
         raise RuntimeError("BulkPublish created a post but returned no post ID; it was not published automatically.")
 
+    # The publish endpoint only confirms that publishing has started. Poll the
+    # post details and verify each channel before reporting a successful test.
     request_json("POST", f"/posts/{int(post_id)}/publish", api_key)
-    save_published_state(state, post, int(post_id), eligible)
+    publish_status, platform_results = wait_for_publication(api_key, int(post_id))
+    save_published_state(state, post, int(post_id), publish_status, platform_results)
+
+    for item in platform_results:
+        print(
+            f"- {item.get('platform', 'unknown')} / channel {item.get('channelId')}: "
+            f"{item.get('status', 'unknown')}"
+        )
+
+    failures = [
+        item for item in platform_results
+        if item.get("status") != "published"
+    ]
+    if failures or publish_status != "published":
+        raise RuntimeError(
+            f"BulkPublish accepted post {post_id}, but final verification is "
+            f"{publish_status}. Review per-channel states above in BulkPublish. "
+            "The post ID and result were saved to prevent duplicate reposting."
+        )
+
     platforms = ", ".join(sorted({channel["platform"] for channel in eligible}))
-    print(f"Published CODAK daily post {post_id} to: {platforms}")
-    print("Publication history updated; workflow will commit the daily state.")
+    print(f"Verified: CODAK post {post_id} published successfully to: {platforms}")
+    print("Publication history updated; workflow will commit the verified result.")
 
 
 if __name__ == "__main__":
