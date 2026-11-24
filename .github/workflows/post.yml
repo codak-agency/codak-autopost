@@ -3,7 +3,8 @@ name: CODAK Daily Post
 on:
   schedule:
     # 16:00 UTC = 18:00 Cairo in winter (Egypt UTC+2).
-    - cron: "0 16 * * *"
+    - cron: "0 18 * * *"
+      timezone: "Africa/Cairo"
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -61,18 +62,18 @@ jobs:
       - name: Generate CODAK content and image
         run: python scripts/generate.py
         env:
-          GEMINI_API_KEY: \${{ secrets.GEMINI_API_KEY }}
-          GEMINI_TEXT_MODEL: \${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.5-flash' }}
-          GEMINI_IMAGE_MODEL: \${{ vars.GEMINI_IMAGE_MODEL || 'gemini-nano-banana-2.1' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.5-flash' }}
+          GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL || 'gemini-nano-banana-2.1' }}
           TIMEZONE: Africa/Cairo
 
       - name: Decide whether publishing is enabled
         id: publish-mode
         shell: bash
         run: |
-          if [[ "\${{ github.event_name }}" == "workflow_dispatch" && "\${{ inputs.publish }}" == "true" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.publish }}" == "true" ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
-          elif [[ "\${{ github.event_name }}" == "schedule" && "\${{ vars.PUBLISH_ENABLED }}" == "true" ]]; then
+          elif [[ "${{ github.event_name }}" == "schedule" && "${{ vars.PUBLISH_ENABLED }}" == "true" ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -80,8 +81,8 @@ jobs:
 
       - name: Publish through BulkPublish (only when explicitly enabled)
         env:
-          BULKPUBLISH_API_KEY: \${{ secrets.BULKPUBLISH_API_KEY }}
-          PUBLISH_ENABLED: \${{ steps.publish-mode.outputs.enabled }}
+          BULKPUBLISH_API_KEY: ${{ secrets.BULKPUBLISH_API_KEY }}
+          PUBLISH_ENABLED: ${{ steps.publish-mode.outputs.enabled }}
           TIMEZONE: Africa/Cairo
         run: python scripts/publish.py
 
@@ -89,7 +90,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: codak-post-\${{ github.run_number }}
+          name: codak-post-${{ github.run_number }}
           path: out/
           if-no-files-found: warn
           retention-days: 14
