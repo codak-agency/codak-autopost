@@ -12,23 +12,23 @@ AI-assisted daily social content generation and publishing for CODAK Agency.
 
 ## Required GitHub Actions secrets
 
-- \`GEMINI_API_KEY\`
-- \`BULKPUBLISH_API_KEY\`
+- `GEMINI_API_KEY`
+- `BULKPUBLISH_API_KEY`
 
 Never place either key in source files, commits, screenshots, or chat messages.
 
 ## Optional repository variables
 
-- \`GEMINI_TEXT_MODEL\` (default: \`gemini-3.5-flash\`)
-- \`GEMINI_IMAGE_MODEL\` (default: \`gemini-nano-banana-2.1\`)
-- \`PUBLISH_ENABLED\` (default: unset / disabled)
+- `GEMINI_TEXT_MODEL` (default: `gemini-2.5-flash`)
+- `GEMINI_IMAGE_MODEL` (default: `gemini-nano-banana-2.1`)
+- `PUBLISH_ENABLED` (default: unset / disabled)
 
 ## Safe first test
 
-1. Merge the reviewed pull request into \`main\`.
+1. Merge the reviewed pull request into `main`.
 2. Open **Actions → CODAK Daily Post → Run workflow**.
 3. Leave **Publish this generated post now** unchecked.
-4. Open the run artifact named \`codak-post-...\` and inspect \`post.png\` and \`post.json\`.
+4. Open the run artifact named `codak-post-...` and inspect `post.png` and `post.json`.
 
 The preview run calls Gemini and may incur image-generation usage, but it does not upload media to BulkPublish or publish to social channels.
 
@@ -37,9 +37,9 @@ The preview run calls Gemini and may incur image-generation usage, but it does n
 Only after approving the generated preview and confirming the BulkPublish API permissions and connected channel capabilities:
 
 1. Open **Settings → Secrets and variables → Actions → Variables**.
-2. Add repository variable \`PUBLISH_ENABLED\` with value \`true\`.
-3. The daily workflow runs at 16:00 UTC (18:00 Cairo during Egypt's UTC+2 period).
-4. To pause scheduled generation and publishing, remove the variable or change its value to anything other than \`true\`.
+2. Add repository variable `PUBLISH_ENABLED` with value `true`.
+3. The daily workflow runs at 18:00 Africa/Cairo time, including seasonal clock changes.
+4. To pause scheduled generation and publishing, remove the variable or change its value to anything other than `true`.
 
 Manual runs remain preview-only unless the publish checkbox is explicitly checked.
 
