@@ -19,8 +19,8 @@ Never place either key in source files, commits, screenshots, or chat messages.
 
 ## Optional repository variables
 
-- `GEMINI_TEXT_MODEL` (default: `gemini-2.5-flash`)
-- `GEMINI_IMAGE_MODEL` (default: `gemini-3.1-flash-image`)
+- `GEMINI_TEXT_MODEL` (default: `gemini-3.8-flash`)
+- `GEMINI_IMAGE_MODEL` (default: `gemini-nano-banana-2.1`)
 - `PUBLISH_ENABLED` (default: unset / disabled)
 
 ## Safe first test
@@ -30,7 +30,7 @@ Never place either key in source files, commits, screenshots, or chat messages.
 3. Leave **Publish this generated post now** unchecked.
 4. Open the run artifact named `codak-post-...` and inspect `post.png` and `post.json`.
 
-The preview run calls Gemini and may incur image-generation usage, but it does not upload media to BulkPublish or publish to social channels.
+The preview run calls Gemini and checks connected BulkPublish channels, but it does not upload media, create a post, or publish to social channels.
 
 ## Enable scheduled publishing later
 
@@ -41,16 +41,16 @@ Only after approving the generated preview and confirming the BulkPublish API pe
 3. The daily workflow runs at 18:00 Africa/Cairo time, including seasonal clock changes.
 4. To pause scheduled generation and publishing, remove the variable or change its value to anything other than `true`.
 
-Manual runs remain preview-only unless the publish checkbox is explicitly checked.
+Manual runs remain preview-only unless the publish checkbox is explicitly checked. For a controlled first live test, put one eligible BulkPublish channel ID in the optional `channel_ids` input; leave it blank to target every eligible connected channel.
 
 ## Current media scope
 
 - Facebook, Instagram, LinkedIn and TikTok are eligible for image-post attempts, subject to the connected account, platform permissions, and plan.
 - YouTube is deliberately excluded because this workflow generates a static image, not a video.
-- TikTok photo-slideshow support must be confirmed for the connected account before relying on it.
+- TikTok photo slideshow is requested as `photo_slideshow`; availability still depends on the connected creator account and its permissions.
 
 ## Important
 
-- A successful API response is not a guarantee that every social platform accepted the post; inspect BulkPublish post status after the first live test.
+- The workflow polls BulkPublish after a publish request and records the final per-channel statuses. Any failed or unconfirmed channel makes the run fail visibly; the history is still saved to prevent duplicate posts.
 - GitHub Actions cron schedules use UTC and may start a little later than the exact minute.
 - Gemini image generation is a paid-tier feature for the configured model. Review current pricing and quotas before enabling daily runs.
