@@ -1,1 +1,42 @@
+name: CODAK Daily Post (Test)
 
+on:
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "Post number: 1 educational, 2 problem-solving, 3 marketing"
+        required: true
+        default: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          pip install playwright requests
+          playwright install --with-deps chromium
+
+      - name: Generate post text
+        run: python scripts/generate.py
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SLOT: ${{ inputs.slot }}
+
+      - name: Render image
+        run: python scripts/render.py
+
+      - name: Save result
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-slot-${{ inputs.slot }}
+          path: out/
