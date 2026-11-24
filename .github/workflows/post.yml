@@ -1,42 +1,113 @@
-name: CODAK Daily Post (Test)
+name: CODAK Daily Post
 
 on:
+  schedule:
+    # Runs at 18:00 local Cairo time, including daylight-saving changes.
+    - cron: "0 18 * * *"
+      timezone: "Africa/Cairo"
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
-      slot:
-        description: "Post number: 1 educational, 2 problem-solving, 3 marketing"
-        required: true
-        default: "1"
+      publish:
+        description: "Publish this generated post now (leave unchecked for preview only)"
+        required: false
+        type: boolean
+        default: false
+      channel_ids:
+        description: "Optional: comma-separated BulkPublish channel IDs (blank targets all eligible channels)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
 
+concurrency:
+  group: codak-daily-post
+  cancel-in-progress: false
+
 jobs:
-  generate:
+  validate:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install
+      - run: pip install -r requirements.txt
+      - name: Validate Python syntax and state JSON
         run: |
-          pip install playwright requests
-          playwright install --with-deps chromium
+          python -m compileall -q scripts
+          python -m json.tool state/history.json > /dev/null
 
-      - name: Generate post text
+  generate-and-publish:
+    if: github.event_name != 'pull_request' && (github.event_name != 'schedule' || vars.PUBLISH_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Arabic fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-core
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate CODAK content and image
         run: python scripts/generate.py
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          SLOT: ${{ inputs.slot }}
+          GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
+          GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL || 'gemini-nano-banana-2.1' }}
+          TIMEZONE: Africa/Cairo
 
-      - name: Render image
-        run: python scripts/render.py
+      - name: Decide whether publishing is enabled
+        id: publish-mode
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.publish }}" == "true" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "schedule" && "${{ vars.PUBLISH_ENABLED }}" == "true" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Save result
+      - name: Publish through BulkPublish (only when explicitly enabled)
+        env:
+          BULKPUBLISH_API_KEY: ${{ secrets.BULKPUBLISH_API_KEY }}
+          PUBLISH_ENABLED: ${{ steps.publish-mode.outputs.enabled }}
+          PUBLISH_CHANNEL_IDS: ${{ inputs.channel_ids }}
+          TIMEZONE: Africa/Cairo
+        run: python scripts/publish.py
+
+      - name: Save generated preview
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: post-slot-${{ inputs.slot }}
+          name: codak-post-${{ github.run_number }}
           path: out/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit publication history
+        if: always() && steps.publish-mode.outputs.enabled == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/history.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: record CODAK daily publication"
+            git push
+          fi
