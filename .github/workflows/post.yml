@@ -2,7 +2,7 @@ name: CODAK Daily Post
 
 on:
   schedule:
-    # 16:00 UTC = 18:00 Cairo in winter (Egypt UTC+2).
+    # Runs at 18:00 local Cairo time, including daylight-saving changes.
     - cron: "0 18 * * *"
       timezone: "Africa/Cairo"
   pull_request:
@@ -14,6 +14,11 @@ on:
         required: false
         type: boolean
         default: false
+      channel_ids:
+        description: "Optional: comma-separated BulkPublish channel IDs (blank targets all eligible channels)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -63,8 +68,8 @@ jobs:
         run: python scripts/generate.py
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.5-flash' }}
-          GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image' }}
+          GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
+          GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL || 'gemini-nano-banana-2.1' }}
           TIMEZONE: Africa/Cairo
 
       - name: Decide whether publishing is enabled
@@ -83,6 +88,7 @@ jobs:
         env:
           BULKPUBLISH_API_KEY: ${{ secrets.BULKPUBLISH_API_KEY }}
           PUBLISH_ENABLED: ${{ steps.publish-mode.outputs.enabled }}
+          PUBLISH_CHANNEL_IDS: ${{ inputs.channel_ids }}
           TIMEZONE: Africa/Cairo
         run: python scripts/publish.py
 
@@ -96,7 +102,7 @@ jobs:
           retention-days: 14
 
       - name: Commit publication history
-        if: success() && steps.publish-mode.outputs.enabled == 'true'
+        if: always() && steps.publish-mode.outputs.enabled == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
