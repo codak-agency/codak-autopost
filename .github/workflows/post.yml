@@ -4,6 +4,8 @@ on:
   schedule:
     # 16:00 UTC = 18:00 Cairo in winter (Egypt UTC+2).
     - cron: "0 16 * * *"
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       publish:
@@ -20,7 +22,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Validate Python syntax and state JSON
+        run: |
+          python -m compileall -q scripts
+          python -m json.tool state/history.json > /dev/null
+
   generate-and-publish:
+    if: github.event_name != 'pull_request' && (github.event_name != 'schedule' || vars.PUBLISH_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
