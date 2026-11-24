@@ -20,7 +20,7 @@ Never place either key in source files, commits, screenshots, or chat messages.
 ## Optional repository variables
 
 - `GEMINI_TEXT_MODEL` (default: `gemini-2.5-flash`)
-- `GEMINI_IMAGE_MODEL` (default: `gemini-nano-banana-2.1`)
+- `GEMINI_IMAGE_MODEL` (default: `gemini-3.1-flash-image`)
 - `PUBLISH_ENABLED` (default: unset / disabled)
 
 ## Safe first test
