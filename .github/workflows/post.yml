@@ -1,42 +1,89 @@
-name: CODAK Daily Post (Test)
+name: CODAK Daily Post
 
 on:
+  schedule:
+    # 16:00 UTC = 18:00 Cairo in winter (Egypt UTC+2).
+    - cron: "0 16 * * *"
   workflow_dispatch:
     inputs:
-      slot:
-        description: "Post number: 1 educational, 2 problem-solving, 3 marketing"
-        required: true
-        default: "1"
+      publish:
+        description: "Publish this generated post now (leave unchecked for preview only)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
-jobs:
-  generate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+concurrency:
+  group: codak-daily-post
+  cancel-in-progress: false
 
-      - uses: actions/setup-python@v5
+jobs:
+  generate-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: Install
+      - name: Install Arabic fonts
         run: |
-          pip install playwright requests
-          playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-core
 
-      - name: Generate post text
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate CODAK content and image
         run: python scripts/generate.py
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          SLOT: ${{ inputs.slot }}
+          GEMINI_API_KEY: \${{ secrets.GEMINI_API_KEY }}
+          GEMINI_TEXT_MODEL: \${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.5-flash' }}
+          GEMINI_IMAGE_MODEL: \${{ vars.GEMINI_IMAGE_MODEL || 'gemini-nano-banana-2.1' }}
+          TIMEZONE: Africa/Cairo
 
-      - name: Render image
-        run: python scripts/render.py
+      - name: Decide whether publishing is enabled
+        id: publish-mode
+        shell: bash
+        run: |
+          if [[ "\${{ github.event_name }}" == "workflow_dispatch" && "\${{ inputs.publish }}" == "true" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [[ "\${{ github.event_name }}" == "schedule" && "\${{ vars.PUBLISH_ENABLED }}" == "true" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Save result
+      - name: Publish through BulkPublish (only when explicitly enabled)
+        env:
+          BULKPUBLISH_API_KEY: \${{ secrets.BULKPUBLISH_API_KEY }}
+          PUBLISH_ENABLED: \${{ steps.publish-mode.outputs.enabled }}
+          TIMEZONE: Africa/Cairo
+        run: python scripts/publish.py
+
+      - name: Save generated preview
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: post-slot-${{ inputs.slot }}
+          name: codak-post-\${{ github.run_number }}
           path: out/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit publication history
+        if: success() && steps.publish-mode.outputs.enabled == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/history.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: record CODAK daily publication"
+            git push
+          fi
