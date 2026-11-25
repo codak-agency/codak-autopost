@@ -23,9 +23,27 @@ TIMEZONE = os.getenv("TIMEZONE", "Africa/Cairo")
 GEMINI_API_BASE = os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta")
 TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.8-flash")
 IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-nano-banana-2.1")
+# Backup models, tried in order if the main model fails. Comma-separated; can be changed from the workflow env.
+TEXT_FALLBACKS = os.getenv("GEMINI_TEXT_FALLBACKS", "gemini-2.5-flash")
+IMAGE_FALLBACKS = os.getenv("GEMINI_IMAGE_FALLBACKS", "gemini-2.5-flash-image")
+CONNECT_TIMEOUT = 15
+MAX_ATTEMPTS = 3
 CREAM = (245, 234, 223)
 BROWN = (62, 44, 32)
 ORANGE = (200, 87, 30)
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
+def model_chain(primary: str, fallbacks: str) -> list[str]:
+    chain: list[str] = []
+    for name in [primary, *fallbacks.split(",")]:
+        name = name.strip()
+        if name and name not in chain:
+            chain.append(name)
+    return chain
 
 
 def local_now() -> datetime:
@@ -50,10 +68,16 @@ def gemini_request(model: str, payload: dict, api_key: str, timeout: int = 180) 
     url = f"{GEMINI_API_BASE}/models/{model}:generateContent"
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     last_error = None
-    for attempt in range(4):
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        started = time.monotonic()
+        log(f"[gemini] model={model} attempt={attempt}/{MAX_ATTEMPTS} read_timeout={timeout}s")
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
-            if response.status_code in (429, 500, 502, 503, 504) and attempt < 3:
+            response = requests.post(
+                url, headers=headers, json=payload, timeout=(CONNECT_TIMEOUT, timeout)
+            )
+            elapsed = time.monotonic() - started
+            log(f"[gemini] HTTP {response.status_code} after {elapsed:.0f}s")
+            if response.status_code in (429, 500, 502, 503, 504) and attempt < MAX_ATTEMPTS:
                 time.sleep(min(2 ** (attempt + 1), 12))
                 continue
             if not response.ok:
@@ -64,11 +88,24 @@ def gemini_request(model: str, payload: dict, api_key: str, timeout: int = 180) 
                 raise RuntimeError(f"Gemini API returned HTTP {response.status_code}: {details}")
             return response.json()
         except requests.RequestException as exc:
+            elapsed = time.monotonic() - started
             last_error = exc
-            if attempt == 3:
+            log(f"[gemini] attempt {attempt} failed after {elapsed:.0f}s: {type(exc).__name__}")
+            if attempt == MAX_ATTEMPTS:
                 break
-            time.sleep(min(2 ** (attempt + 1), 12))
-    raise RuntimeError(f"Gemini API request failed: {last_error}")
+            time.sleep(5)
+    raise RuntimeError(f"Gemini API request failed for model {model}: {last_error}")
+
+
+def gemini_with_fallback(models: list[str], payload: dict, api_key: str, timeout: int) -> dict:
+    errors: list[str] = []
+    for model in models:
+        try:
+            return gemini_request(model, payload, api_key, timeout=timeout)
+        except RuntimeError as exc:
+            log(f"[gemini] model {model} gave up: {exc}")
+            errors.append(f"{model}: {exc}")
+    raise RuntimeError("All Gemini models failed. " + " | ".join(errors))
 
 
 def extract_text(response: dict) -> str:
@@ -141,7 +178,8 @@ def generate_copy(api_key: str, now: datetime, history: dict) -> dict:
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.85, "responseMimeType": "application/json"},
     }
-    parsed = parse_json_response(extract_text(gemini_request(TEXT_MODEL, payload, api_key, timeout=120)))
+    models = model_chain(TEXT_MODEL, TEXT_FALLBACKS)
+    parsed = parse_json_response(extract_text(gemini_with_fallback(models, payload, api_key, timeout=120)))
     for key in ("topic", "headline", "caption", "visual_prompt"):
         if not isinstance(parsed.get(key), str) or not parsed[key].strip():
             raise RuntimeError(f"Gemini response is missing a valid '{key}' value.")
@@ -185,7 +223,8 @@ def generate_background(api_key: str, visual_prompt: str) -> bytes:
             "imageConfig": {"aspectRatio": "1:1", "imageSize": "1K"},
         },
     }
-    response = gemini_request(IMAGE_MODEL, payload, api_key, timeout=240)
+    models = model_chain(IMAGE_MODEL, IMAGE_FALLBACKS)
+    response = gemini_with_fallback(models, payload, api_key, timeout=240)
     for candidate in response.get("candidates", []):
         for part in candidate.get("content", {}).get("parts", []):
             inline = part.get("inlineData") or part.get("inline_data")
@@ -286,6 +325,8 @@ def main() -> None:
         print(f"CODAK already published for {date_key}; generation skipped.")
         return
 
+    log(f"Text models: {model_chain(TEXT_MODEL, TEXT_FALLBACKS)}")
+    log(f"Image models: {model_chain(IMAGE_MODEL, IMAGE_FALLBACKS)}")
     copy = generate_copy(api_key, now, history)
     background = generate_background(api_key, copy["visual_prompt"])
     (OUT / "ai_background.png").write_bytes(background)
