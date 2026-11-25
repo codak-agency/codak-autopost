@@ -24,10 +24,13 @@ GEMINI_API_BASE = os.getenv("GEMINI_API_BASE", "https://generativelanguage.googl
 TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.8-flash")
 IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-nano-banana-2.1")
 # Backup models, tried in order if the main model fails. Comma-separated; can be changed from the workflow env.
-TEXT_FALLBACKS = os.getenv("GEMINI_TEXT_FALLBACKS", "")
-IMAGE_FALLBACKS = os.getenv("GEMINI_IMAGE_FALLBACKS", "")
+# "or" (not a getenv default) so an empty GitHub variable still falls back to the defaults.
+TEXT_FALLBACKS = os.getenv("GEMINI_TEXT_FALLBACKS") or "gemini-3.7-flash,gemini-3.5-flash,gemini-2.5-flash"
+IMAGE_FALLBACKS = os.getenv("GEMINI_IMAGE_FALLBACKS") or "gemini-3.1-flash-image,gemini-3-pro-image,gemini-2.5-flash-image"
 CONNECT_TIMEOUT = 15
-MAX_ATTEMPTS = 6
+MAX_ATTEMPTS = 3  # per model; then move to the next model in the chain
+TOTAL_BUDGET_SECONDS = int(os.getenv("GEMINI_TOTAL_BUDGET", "840"))  # 14 min, job limit is 20
+_DEADLINE = time.monotonic() + TOTAL_BUDGET_SECONDS
 CREAM = (245, 234, 223)
 BROWN = (62, 44, 32)
 ORANGE = (200, 87, 30)
@@ -69,6 +72,8 @@ def gemini_request(model: str, payload: dict, api_key: str, timeout: int = 180) 
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     last_error = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        if time.monotonic() > _DEADLINE:
+            raise RuntimeError("Gemini total time budget exhausted")
         started = time.monotonic()
         log(f"[gemini] model={model} attempt={attempt}/{MAX_ATTEMPTS} read_timeout={timeout}s")
         try:
@@ -78,7 +83,7 @@ def gemini_request(model: str, payload: dict, api_key: str, timeout: int = 180) 
             elapsed = time.monotonic() - started
             log(f"[gemini] HTTP {response.status_code} after {elapsed:.0f}s")
             if response.status_code in (429, 500, 502, 503, 504) and attempt < MAX_ATTEMPTS:
-                wait = min(10 * 2 ** (attempt - 1), 60)
+                wait = min(5 * 2 ** (attempt - 1), 30)
                 log(f"[gemini] model busy, waiting {wait}s before retry")
                 time.sleep(wait)
                 continue
@@ -95,15 +100,17 @@ def gemini_request(model: str, payload: dict, api_key: str, timeout: int = 180) 
             log(f"[gemini] attempt {attempt} failed after {elapsed:.0f}s: {type(exc).__name__}")
             if attempt == MAX_ATTEMPTS:
                 break
-            time.sleep(10)
+            time.sleep(5)
     raise RuntimeError(f"Gemini API request failed for model {model}: {last_error}")
 
 
-def gemini_with_fallback(models: list[str], payload: dict, api_key: str, timeout: int) -> dict:
+def gemini_with_fallback(models: list[str], payload, api_key: str, timeout: int) -> dict:
+    """payload may be a dict or a callable(model) -> dict for per-model request shapes."""
     errors: list[str] = []
     for model in models:
         try:
-            return gemini_request(model, payload, api_key, timeout=timeout)
+            body = payload(model) if callable(payload) else payload
+            return gemini_request(model, body, api_key, timeout=timeout)
         except RuntimeError as exc:
             log(f"[gemini] model {model} gave up: {exc}")
             errors.append(f"{model}: {exc}")
@@ -181,7 +188,7 @@ def generate_copy(api_key: str, now: datetime, history: dict) -> dict:
         "generationConfig": {"temperature": 0.85, "responseMimeType": "application/json"},
     }
     models = model_chain(TEXT_MODEL, TEXT_FALLBACKS)
-    parsed = parse_json_response(extract_text(gemini_with_fallback(models, payload, api_key, timeout=120)))
+    parsed = parse_json_response(extract_text(gemini_with_fallback(models, payload, api_key, timeout=90)))
     for key in ("topic", "headline", "caption", "visual_prompt"):
         if not isinstance(parsed.get(key), str) or not parsed[key].strip():
             raise RuntimeError(f"Gemini response is missing a valid '{key}' value.")
@@ -218,15 +225,17 @@ def generate_background(api_key: str, visual_prompt: str) -> bytes:
         "NO UI screenshots containing readable text. Concept: "
         + visual_prompt
     )
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "responseModalities": ["TEXT", "IMAGE"],
-            "imageConfig": {"aspectRatio": "1:1", "imageSize": "1K"},
-        },
-    }
+    def payload(model: str) -> dict:
+        image_config = {"aspectRatio": "1:1"}
+        if not model.startswith("gemini-2.5"):
+            image_config["imageSize"] = "1K"
+        return {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"], "imageConfig": image_config},
+        }
+
     models = model_chain(IMAGE_MODEL, IMAGE_FALLBACKS)
-    response = gemini_with_fallback(models, payload, api_key, timeout=240)
+    response = gemini_with_fallback(models, payload, api_key, timeout=150)
     for candidate in response.get("candidates", []):
         for part in candidate.get("content", {}).get("parts", []):
             inline = part.get("inlineData") or part.get("inline_data")
